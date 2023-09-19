@@ -11,10 +11,17 @@
 #include <cpu_macros.S>
 #include <plat_macros.S>
 
-/* Hardware handled coherency */
-#if HW_ASSISTED_COHERENCY == 0
-#error "Cortex-A55 must be compiled with HW_ASSISTED_COHERENCY enabled"
-#endif
+/* ---------------------------------------------
+ * Disable L1 data cache and unified L2 cache
+ * ---------------------------------------------
+ */
+func cortex_a55_disable_dcache
+        mrs     x1, sctlr_el3
+        bic     x1, x1, #SCTLR_C_BIT
+        msr     sctlr_el3, x1
+        isb
+        ret
+endfunc cortex_a55_disable_dcache
 
 	/* --------------------------------------------------
 	 * Errata Workaround for Cortex A55 Errata #768277.
@@ -292,12 +299,52 @@ func cortex_a55_core_pwr_dwn
 	 * Enable CPU power down bit in power control register
 	 * ---------------------------------------------
 	 */
+	mrs     x0, mpidr_el1
+	and     x1, x0, #MPIDR_CPU_MASK
+	and     x0, x0, #MPIDR_CLUSTER_MASK
+	add     x0, x1, x0, LSR #8
+	mov     w1, #CPU_CTRL_RANGE
+	mul	w1, w1, w0
+	ldr     w2, =MISC_REG_ENABLE_CPU0
+	add     w1, w1, w2
+	ldr     w0, [x1]
+	orr     w0, w0, #CPU_HW_STATE_MACHINE
+	str     w0, [x1]
+	isb
 	mrs	x0, CORTEX_A55_CPUPWRCTLR_EL1
 	orr	x0, x0, #CORTEX_A55_CORE_PWRDN_EN_MASK
 	msr	CORTEX_A55_CPUPWRCTLR_EL1, x0
 	isb
 	ret
 endfunc cortex_a55_core_pwr_dwn
+func cortex_a55_cluster_pwr_dwn
+	mov	x18, x30
+	/* ---------------------------------------------
+	 * Turn off caches.
+	 * ---------------------------------------------
+	 */
+	bl	cortex_a55_disable_dcache
+	/* ---------------------------------------------
+	 * Flush L1 caches.
+	 * ---------------------------------------------
+	 */
+	mov	x0, #DCCISW
+	bl	dcsw_op_level1
+	/* ---------------------------------------------
+	 * Disable the optional ACP.
+	 * ---------------------------------------------
+	 */
+	bl	plat_disable_acp
+	/* ---------------------------------------------
+	 * Flush L2 caches.
+	 * ---------------------------------------------
+	 */
+	mov	x0, #DCCISW
+	bl	dcsw_op_level2
+	mov	x30, x18
+	isb
+	ret
+endfunc cortex_a55_cluster_pwr_dwn
 
 #if REPORT_ERRATA
 /*
@@ -348,4 +395,5 @@ endfunc cortex_a55_cpu_reg_dump
 
 declare_cpu_ops cortex_a55, CORTEX_A55_MIDR, \
 	cortex_a55_reset_func, \
-	cortex_a55_core_pwr_dwn
+	cortex_a55_core_pwr_dwn, \
+	cortex_a55_cluster_pwr_dwn
